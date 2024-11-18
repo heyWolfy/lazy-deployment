@@ -87,17 +87,17 @@ DEFAULT_CPU_QUOTA="50%"
 DEFAULT_MEMORY_MAX="1G"
 
 # Get user inputs
-get_input "Enter the Nice name of the app: " APP_NICE_NAME
-get_input "Enter the code name of the app: " APP_CODE_NAME
-get_input "Enter the GitHub repo URL: " GITHUB_REPO
-get_input "Enter the domain name: " DOMAIN_NAME
-get_input "Enter the port to run the app on: " APP_PORT validate_port
-get_input "Enter the number of workers (recommended: $recommended_workers): " NUM_WORKERS validate_integer "" $recommended_workers
-get_input "Enter the concurrency limit: " CONCURRENCY_LIMIT validate_integer "" $DEFAULT_CONCURRENCY_LIMIT
-get_input "Enter the backlog size: " BACKLOG_SIZE validate_integer "" $DEFAULT_BACKLOG_SIZE
-get_input "Enter the Nice value (-20 to 19): " NICE_VALUE validate_nice_value "" $DEFAULT_NICE_VALUE
-get_input "Enter the CPU quota (e.g., 50%): " CPU_QUOTA validate_percentage "" $DEFAULT_CPU_QUOTA
-get_input "Enter the maximum memory usage (e.g., 1G): " MEMORY_MAX "" "" $DEFAULT_MEMORY_MAX
+get_input "Enter the Nice name of the app: " APP_NICE_NAME "" "This is a human-readable name for your application."
+get_input "Enter the code name of the app: " APP_CODE_NAME "" "This is the name used for system files and directories."
+get_input "Enter the GitHub repo URL: " GITHUB_REPO "" "The URL of the GitHub repository containing your application code."
+get_input "Enter the domain name: " DOMAIN_NAME "" "The domain name where your application will be accessible."
+get_input "Enter the port to run the app on: " APP_PORT validate_port "The port number on which your application will listen (between 1024 and 65535)."
+get_input "Enter the number of workers (recommended: $recommended_workers): " NUM_WORKERS validate_integer "" $recommended_workers "The number of worker processes to spawn (integer)."
+get_input "Enter the concurrency limit (default: $DEFAULT_CONCURRENCY_LIMIT): " CONCURRENCY_LIMIT validate_integer "" $DEFAULT_CONCURRENCY_LIMIT "The maximum number of concurrent connections (integer)."
+get_input "Enter the backlog size (default: $DEFAULT_BACKLOG_SIZE):" BACKLOG_SIZE validate_integer "" $DEFAULT_BACKLOG_SIZE "The maximum number of pending connections (integer)."
+get_input "Enter the Nice value (-20 to 19) (default: $DEFAULT_NICE_VALUE):" NICE_VALUE validate_nice_value "" $DEFAULT_NICE_VALUE "The Nice value for process priority (-20 to 19, lower is higher priority)."
+get_input "Enter the CPU quota (e.g., 50%) (default: $DEFAULT_CPU_QUOTA):" CPU_QUOTA validate_percentage "" $DEFAULT_CPU_QUOTA "The maximum CPU usage allowed for the application (percentage)."
+get_input "Enter the maximum memory usage (e.g., 1G) (default: $DEFAULT_MEMORY_MAX):" MEMORY_MAX "" "" $DEFAULT_MEMORY_MAX "The maximum memory usage allowed for the application (e.g., 0.5G, 1G)."
 
 # NGINX configuration defaults
 NGINX_WORKER_CONNECTIONS=1024
@@ -115,16 +115,28 @@ if check_port "$APP_PORT"; then
     exit 1
 fi
 
+# Add prompts for GitHub credentials
+get_input "Enter your GitHub username (leave blank for public repos): " GITHUB_USERNAME
+get_input "Enter your GitHub Personal Access Token (leave blank for public repos): " GITHUB_PAT
+
 # Create the app directory and clone the repository
 sudo adduser --system --group --home /var/www/$APP_CODE_NAME $APP_CODE_NAME
+sudo mkdir -p /var/www/$APP_CODE_NAME
+sudo chown $USER:$USER /var/www/$APP_CODE_NAME
 cd /var/www/$APP_CODE_NAME
-git clone $GITHUB_REPO .
+
+if [ -n "$GITHUB_USERNAME" ] && [ -n "$GITHUB_PAT" ]; then
+    # For private repositories
+    REPO_URL=$(echo $GITHUB_REPO | sed "s/https:\/\//https:\/\/$GITHUB_USERNAME:$GITHUB_PAT@/")
+    sudo -u $APP_CODE_NAME git clone $REPO_URL .
+else
+    # For public repositories
+    sudo -u $APP_CODE_NAME git clone $GITHUB_REPO .
+fi
 
 # Set up the virtual environment and install dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install --no-cache-dir -r requirements.txt
-pip install --no-cache-dir uvloop httptools
+sudo -u $APP_CODE_NAME python3 -m venv venv
+sudo -u $APP_CODE_NAME bash -c "source venv/bin/activate && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir uvloop httptools"
 
 # Set correct permissions
 sudo chown -R $APP_CODE_NAME:$APP_CODE_NAME /var/www/$APP_CODE_NAME
