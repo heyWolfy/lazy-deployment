@@ -2,9 +2,20 @@
 
 set -euo pipefail
 
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Function for colored echo
+color_echo() {
+    echo -e "${YELLOW}[INFO] $1${NC}"
+}
+
 # Cleanup function
 cleanup() {
-    echo "An error occurred. Cleaning up..."
+    echo -e "${RED}An error occurred. Cleaning up...${NC}"
     # Add commands to undo changes here, for example:
     sudo systemctl stop $APP_CODE_NAME.service 2>/dev/null || true
     sudo systemctl disable $APP_CODE_NAME.service 2>/dev/null || true
@@ -14,7 +25,7 @@ cleanup() {
     sudo systemctl reload nginx
     sudo userdel -r $APP_CODE_NAME 2>/dev/null || true
     sudo rm -rf /var/www/$APP_CODE_NAME
-    echo "Cleanup completed."
+    echo -e "${RED}Cleanup completed.${NC}"
     exit 1
 }
 
@@ -34,16 +45,38 @@ main() {
     
     # Function to get user input with validation and default values
     get_input() {
-        local prompt="$1"
-        local var_name="$2"
-        local validation_func="$3"
-        local explanation="$4"
-        local default_value="$5"
+        local prompt="${1:-}"
+        local var_name="${2:-}"
+        local validation_func="${3:-}"
+        local explanation="${4:-}"
+        local default_value="${5:-}"
         
-        echo "$explanation"
-        if [ -n "$default_value" ]; then
-            read -p "Use default value ($default_value)? [Y/n]: " use_default
-            if [[ $use_default =~ ^[Nn]$ ]]; then
+        if [ "$INSTALLATION_MODE" = "Easy" ] && [ -n "$default_value" ]; then
+            eval "$var_name='$default_value'"
+            echo "Using default value for $var_name: $default_value"
+        else
+            echo "$explanation"
+            if [ -n "$default_value" ]; then
+                read -p "Use default value ($default_value)? [Y/n]: " use_default
+                if [[ $use_default =~ ^[Nn]$ ]]; then
+                    while true; do
+                        read -p "$prompt" input
+                        if [ -n "$validation_func" ]; then
+                            if $validation_func "$input"; then
+                                eval "$var_name='$input'"
+                                break
+                            else
+                                echo "Invalid input. Please try again."
+                            fi
+                        else
+                            eval "$var_name='$input'"
+                            break
+                        fi
+                    done
+                else
+                    eval "$var_name='$default_value'"
+                fi
+            else
                 while true; do
                     read -p "$prompt" input
                     if [ -n "$validation_func" ]; then
@@ -58,24 +91,7 @@ main() {
                         break
                     fi
                 done
-            else
-                eval "$var_name='$default_value'"
             fi
-        else
-            while true; do
-                read -p "$prompt" input
-                if [ -n "$validation_func" ]; then
-                    if $validation_func "$input"; then
-                        eval "$var_name='$input'"
-                        break
-                    else
-                        echo "Invalid input. Please try again."
-                    fi
-                else
-                    eval "$var_name='$input'"
-                    break
-                fi
-            done
         fi
         echo
     }
@@ -97,6 +113,16 @@ main() {
         [[ $1 =~ ^-?[0-9]+$ ]] && [ "$1" -ge -20 ] && [ "$1" -le 19 ]
     }
     
+    # Get installation mode
+    while true; do
+        read -p "Choose Installation Mode (Easy/Advanced): " INSTALLATION_MODE
+        if [[ $INSTALLATION_MODE =~ ^(Easy|Advanced)$ ]]; then
+            break
+        else
+            echo "Invalid input. Please enter 'Easy' or 'Advanced'."
+        fi
+    done
+    
     # Calculate recommended number of workers
     recommended_workers=$(($(nproc) * 2 + 1))
     
@@ -111,14 +137,16 @@ main() {
     get_input "Enter the Nice name of the app: " APP_NICE_NAME "" "This is a human-readable name for your application."
     get_input "Enter the code name of the app: " APP_CODE_NAME "" "This is the name used for system files and directories."
     get_input "Enter the GitHub repo URL: " GITHUB_REPO "" "The URL of the GitHub repository containing your application code."
+    get_input "Enter your GitHub username (leave blank for public repos): " GITHUB_USERNAME
+    get_input "Enter your GitHub Personal Access Token (leave blank for public repos): " GITHUB_PAT
     get_input "Enter the domain name: " DOMAIN_NAME "" "The domain name where your application will be accessible."
     get_input "Enter the port to run the app on: " APP_PORT validate_port "The port number on which your application will listen (between 1024 and 65535)."
-    get_input "Enter the number of workers (recommended: $recommended_workers): " NUM_WORKERS validate_integer "" $recommended_workers "The number of worker processes to spawn (integer)."
-    get_input "Enter the concurrency limit (default: $DEFAULT_CONCURRENCY_LIMIT): " CONCURRENCY_LIMIT validate_integer "" $DEFAULT_CONCURRENCY_LIMIT "The maximum number of concurrent connections (integer)."
-    get_input "Enter the backlog size (default: $DEFAULT_BACKLOG_SIZE):" BACKLOG_SIZE validate_integer "" $DEFAULT_BACKLOG_SIZE "The maximum number of pending connections (integer)."
-    get_input "Enter the Nice value (-20 to 19) (default: $DEFAULT_NICE_VALUE):" NICE_VALUE validate_nice_value "" $DEFAULT_NICE_VALUE "The Nice value for process priority (-20 to 19, lower is higher priority)."
-    get_input "Enter the CPU quota (e.g., 50%) (default: $DEFAULT_CPU_QUOTA):" CPU_QUOTA validate_percentage "" $DEFAULT_CPU_QUOTA "The maximum CPU usage allowed for the application (percentage)."
-    get_input "Enter the maximum memory usage (e.g., 1G) (default: $DEFAULT_MEMORY_MAX):" MEMORY_MAX "" "" $DEFAULT_MEMORY_MAX "The maximum memory usage allowed for the application (e.g., 0.5G, 1G)."
+    get_input "Enter the number of workers (recommended: $recommended_workers): " NUM_WORKERS validate_integer "" $recommended_workers
+    get_input "Enter the concurrency limit: " CONCURRENCY_LIMIT validate_integer "" $DEFAULT_CONCURRENCY_LIMIT
+    get_input "Enter the backlog size:" BACKLOG_SIZE validate_integer "" $DEFAULT_BACKLOG_SIZE
+    get_input "Enter the Nice value (-20 to 19):" NICE_VALUE validate_nice_value "" $DEFAULT_NICE_VALUE
+    get_input "Enter the CPU quota (e.g., 50%):" CPU_QUOTA validate_percentage "" $DEFAULT_CPU_QUOTA
+    get_input "Enter the maximum memory usage (e.g., 1G):" MEMORY_MAX "" "" $DEFAULT_MEMORY_MAX
     
     # NGINX configuration defaults
     NGINX_WORKER_CONNECTIONS=1024
@@ -136,34 +164,45 @@ main() {
         exit 1
     fi
     
-    # Add prompts for GitHub credentials
-    get_input "Enter your GitHub username (leave blank for public repos): " GITHUB_USERNAME
-    get_input "Enter your GitHub Personal Access Token (leave blank for public repos): " GITHUB_PAT
-    
     # Create the app directory and clone the repository
     sudo adduser --system --group --home /var/www/$APP_CODE_NAME $APP_CODE_NAME
-    sudo mkdir -p /var/www/$APP_CODE_NAME
-    sudo chown $USER:$USER /var/www/$APP_CODE_NAME
-    cd /var/www/$APP_CODE_NAME
+    sudo chown $APP_CODE_NAME:$APP_CODE_NAME /var/www/$APP_CODE_NAME
     
+    # Clone the repository
     if [ -n "$GITHUB_USERNAME" ] && [ -n "$GITHUB_PAT" ]; then
         # For private repositories
         REPO_URL=$(echo $GITHUB_REPO | sed "s/https:\/\//https:\/\/$GITHUB_USERNAME:$GITHUB_PAT@/")
-        sudo -u $APP_CODE_NAME git clone $REPO_URL .
+        sudo -u $APP_CODE_NAME git clone $REPO_URL /var/www/$APP_CODE_NAME
     else
         # For public repositories
-        sudo -u $APP_CODE_NAME git clone $GITHUB_REPO .
+        sudo -u $APP_CODE_NAME git clone $GITHUB_REPO /var/www/$APP_CODE_NAME
     fi
     
-    # Set up the virtual environment and install dependencies
+    # Change to the app directory
+    cd /var/www/$APP_CODE_NAME
+    color_echo "Changed to app directory"
+
+    # Create the virtual environment
+    color_echo "Creating virtual environment..."
     sudo -u $APP_CODE_NAME python3 -m venv venv
-    sudo -u $APP_CODE_NAME bash -c "source venv/bin/activate && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir uvloop httptools"
-    
-    # Set correct permissions
-    sudo chown -R $APP_CODE_NAME:$APP_CODE_NAME /var/www/$APP_CODE_NAME
+    color_echo "Virtual environment created"
+
+    # Install dependencies
+    color_echo "Installing dependencies..."
+    if ! sudo -u $APP_CODE_NAME bash -c "source venv/bin/activate && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir uvloop httptools"; then
+        echo -e "${RED}Failed to install dependencies${NC}"
+        exit 1
+    fi
+    color_echo "Dependencies installed successfully"
+
+    # Set correct permissions for the virtual environment
+    color_echo "Setting permissions for virtual environment..."
+    sudo chown -R $APP_CODE_NAME:$APP_CODE_NAME venv
+    color_echo "Permissions set"
     
     # Create the systemd service file
-    sudo tee /etc/systemd/system/$APP_CODE_NAME.service > /dev/null << EOL
+    color_echo "Creating systemd service file..."
+    if ! sudo tee /etc/systemd/system/$APP_CODE_NAME.service > /dev/null << EOL
     [Unit]
     Description=$APP_NICE_NAME API Powered by FastAPI
     After=network.target
@@ -217,16 +256,25 @@ main() {
     KillSignal=SIGINT
     
     [Install]
-    WantedBy=multi-user.target
-    EOL
-    
+    WantedBy=multi-user.target 
+EOL
+    then
+        echo -e "${RED}Failed to create systemd service file${NC}"
+        exit 1
+    fi
+    color_echo "Systemd service file created"
+
     # Reload systemd, enable and start the service
+    color_echo "Reloading systemd..."
     sudo systemctl daemon-reload
+    color_echo "Enabling service..."
     sudo systemctl enable $APP_CODE_NAME.service
+    color_echo "Starting service..."
     sudo systemctl start $APP_CODE_NAME.service
     
     # Create Nginx configuration
-    sudo tee /etc/nginx/sites-available/$APP_CODE_NAME > /dev/null << EOL
+    color_echo "Creating Nginx configuration..."
+    if ! sudo tee /etc/nginx/sites-available/$APP_CODE_NAME > /dev/null << EOL
     # Optimize NGINX worker processes
     worker_processes auto;
     worker_rlimit_nofile 65535;
@@ -331,16 +379,28 @@ main() {
             }
         }
     }
-    EOL
-    
+EOL
+    then
+        echo -e "${RED}Failed to create Nginx configuration${NC}"
+        exit 1
+    fi
+    color_echo "Nginx configuration created"
+
     # Enable the Nginx configuration and restart Nginx
+    color_echo "Enabling Nginx configuration..."
     sudo ln -s /etc/nginx/sites-available/$APP_CODE_NAME /etc/nginx/sites-enabled/
-    sudo nginx -t && sudo systemctl restart nginx
+    color_echo "Testing Nginx configuration..."
+    if ! sudo nginx -t; then
+        echo -e "${RED}Nginx configuration test failed${NC}"
+        exit 1
+    fi
+    color_echo "Restarting Nginx..."
+    sudo systemctl restart nginx
     
-    echo "Installation complete. Your FastAPI app '$APP_NICE_NAME' is now running on $DOMAIN_NAME"
+    echo -e "${GREEN}Installation complete. Your FastAPI app '$APP_NICE_NAME' is now running on $DOMAIN_NAME${NC}"
     
     # Display Nice values of other installed apps by the user
-    echo "Nice values of other installed apps by the user:"
+    color_echo "Nice values of other installed apps by the user:"
     ps -eo nice,comm,user | grep "^-\|^ [0-9]" | grep -v "root" | sort -n | uniq
 }
 
