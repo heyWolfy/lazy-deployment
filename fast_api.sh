@@ -15,7 +15,7 @@ color_echo() {
 
 # Cleanup function
 cleanup() {
-    echo -e "${RED}An error occurred. Cleaning up...${NC}"
+    echo -e "${RED}Cleaning up...${NC}"
     # Add commands to undo changes here, for example:
     sudo systemctl stop $APP_CODE_NAME.service 2>/dev/null || true
     sudo systemctl disable $APP_CODE_NAME.service 2>/dev/null || true
@@ -26,11 +26,47 @@ cleanup() {
     sudo userdel -r $APP_CODE_NAME 2>/dev/null || true
     sudo rm -rf /var/www/$APP_CODE_NAME
     echo -e "${RED}Cleanup completed.${NC}"
-    exit 1
 }
 
 # Set trap to call cleanup function on error
 trap cleanup ERR
+
+# Function to Check and Update system packages
+check_update_system() {
+    color_echo "Checking for system updates..."
+    
+    # Check for updates
+    if sudo apt-get update 2>&1 | grep -q 'packages can be upgraded'; then
+        color_echo "Updates are available. Updating system packages..."
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+    else
+        color_echo "No updates available. System is up to date."
+    fi
+}
+
+# Function to check and install nginx
+check_install_nginx() {
+    if ! command -v nginx &> /dev/null; then
+        color_echo "Nginx not found. Installing nginx..."
+        sudo apt-get install -y nginx
+    else
+        color_echo "Nginx is already installed."
+    fi
+    
+    color_echo "Starting nginx..."
+    sudo systemctl start nginx
+}
+
+# Function to check and install python3-venv
+check_install_python_venv() {
+    if ! dpkg -s python3-venv &> /dev/null; then
+        color_echo "Python3-venv not found. Installing python3-venv..."
+        sudo apt-get install -y python3-venv
+    else
+        color_echo "Python3-venv is already installed."
+    fi
+}
 
 # Main function
 main() {
@@ -112,7 +148,23 @@ main() {
     validate_nice_value() {
         [[ $1 =~ ^-?[0-9]+$ ]] && [ "$1" -ge -20 ] && [ "$1" -le 19 ]
     }
-    
+        # Choose mode
+    while true; do
+        read -p "Choose mode (Install/Uninstall): " MODE
+        if [[ $MODE =~ ^(Install|Uninstall)$ ]]; then
+            break
+        else
+            echo "Invalid input. Please enter 'Install' or 'Uninstall'."
+        fi
+    done
+
+    if [ "$MODE" = "Uninstall" ]; then
+        read -p "Enter the app code name to uninstall: " APP_CODE_NAME
+        cleanup
+        echo -e "${GREEN}Uninstallation complete for '$APP_CODE_NAME'${NC}"
+        exit 0
+    fi
+
     # Get installation mode
     while true; do
         read -p "Choose Installation Mode (Easy/Advanced): " INSTALLATION_MODE
@@ -132,6 +184,7 @@ main() {
     DEFAULT_NICE_VALUE=0
     DEFAULT_CPU_QUOTA="50%"
     DEFAULT_MEMORY_MAX="1G"
+    NGINX_GZIP_COMP_LEVEL=6
     
     # Get user inputs
     get_input "Enter the Nice name of the app: " APP_NICE_NAME "" "This is a human-readable name for your application."
@@ -148,15 +201,17 @@ main() {
     get_input "Enter the CPU quota (e.g., 50%):" CPU_QUOTA validate_percentage "" $DEFAULT_CPU_QUOTA
     get_input "Enter the maximum memory usage (e.g., 1G):" MEMORY_MAX "" "" $DEFAULT_MEMORY_MAX
     
-    # NGINX configuration defaults
-    NGINX_WORKER_CONNECTIONS=1024
-    NGINX_KEEPALIVE_TIMEOUT=65
-    NGINX_GZIP_COMP_LEVEL=6
-    
     # Get NGINX configuration inputs
-    get_input "Enter NGINX worker connections: " NGINX_WORKER_CONNECTIONS validate_integer "" $NGINX_WORKER_CONNECTIONS
-    get_input "Enter NGINX keepalive timeout: " NGINX_KEEPALIVE_TIMEOUT validate_integer "" $NGINX_KEEPALIVE_TIMEOUT
     get_input "Enter NGINX gzip compression level (1-9): " NGINX_GZIP_COMP_LEVEL validate_integer "" $NGINX_GZIP_COMP_LEVEL
+
+    # Update system packages
+    check_update_system
+
+    # Check and install nginx
+    check_install_nginx
+
+    # Check and install python3-venv
+    check_install_python_venv
     
     # Check if the port is in use
     if check_port "$APP_PORT"; then
@@ -191,6 +246,7 @@ main() {
     color_echo "Installing dependencies..."
     if ! sudo -u $APP_CODE_NAME bash -c "source venv/bin/activate && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir uvloop httptools"; then
         echo -e "${RED}Failed to install dependencies${NC}"
+        cleanup
         exit 1
     fi
     color_echo "Dependencies installed successfully"
@@ -256,10 +312,11 @@ main() {
     KillSignal=SIGINT
     
     [Install]
-    WantedBy=multi-user.target 
+    WantedBy=multi-user.target
 EOL
     then
         echo -e "${RED}Failed to create systemd service file${NC}"
+        cleanup
         exit 1
     fi
     color_echo "Systemd service file created"
@@ -275,113 +332,60 @@ EOL
     # Create Nginx configuration
     color_echo "Creating Nginx configuration..."
     if ! sudo tee /etc/nginx/sites-available/$APP_CODE_NAME > /dev/null << EOL
-    # Optimize NGINX worker processes
-    worker_processes auto;
-    worker_rlimit_nofile 65535;
-    
-    events {
-        worker_connections $NGINX_WORKER_CONNECTIONS;
-        multi_accept on;
-        use epoll;
-    }
-    
-    http {
-        # Basic settings
-        sendfile on;
-        tcp_nopush on;
-        tcp_nodelay on;
-        keepalive_timeout $NGINX_KEEPALIVE_TIMEOUT;
-        types_hash_max_size 2048;
-        server_tokens off;
-    
-        # Optimize file handles
-        open_file_cache max=1000 inactive=20s;
-        open_file_cache_valid 30s;
-        open_file_cache_min_uses 2;
-        open_file_cache_errors on;
-    
-        # Gzip settings
-        gzip on;
-        gzip_vary on;
-        gzip_proxied any;
-        gzip_comp_level $NGINX_GZIP_COMP_LEVEL;
-        gzip_buffers 16 8k;
-        gzip_http_version 1.1;
-        gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
-    
-        # SSL settings
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_prefer_server_ciphers on;
-        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-        ssl_session_cache shared:SSL:10m;
-        ssl_session_timeout 1d;
-        ssl_session_tickets off;
-    
-        server {
-            listen 80;
-            server_name $DOMAIN_NAME;
-    
-            # Redirect HTTP to HTTPS (for Cloudflare Flexible SSL)
-            if (\$http_x_forwarded_proto != "https") {
-                return 301 https://\$server_name\$request_uri;
-            }
-    
-            location / {
-                proxy_pass http://127.0.0.1:$APP_PORT;
-                proxy_http_version 1.1;
-                proxy_set_header Upgrade \$http_upgrade;
-                proxy_set_header Connection "upgrade";
-                proxy_set_header Host \$host;
-                proxy_set_header X-Real-IP \$remote_addr;
-                proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto \$scheme;
-                proxy_set_header X-Forwarded-Host \$server_name;
-    
-                # Enable keepalive connections
-                proxy_set_header Connection "";
-    
-                # Proxy buffer optimization
-                proxy_buffering on;
-                proxy_buffer_size 16k;
-                proxy_busy_buffers_size 24k;
-                proxy_buffers 32 16k;
-    
-                # Increase timeouts if needed
-                proxy_connect_timeout 60s;
-                proxy_send_timeout 60s;
-                proxy_read_timeout 60s;
-    
-                # Caching
-                proxy_cache_use_stale error timeout http_500 http_502 http_503 http_504;
-                proxy_cache_lock on;
-                proxy_cache_valid 200 1m;
-                proxy_cache_valid 404 10m;
-                proxy_cache_bypass \$http_upgrade;
-                add_header X-Cache-Status \$upstream_cache_status;
-            }
-    
-            # Optimize client-side caching for static assets
-            location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
-                expires 30d;
-                add_header Cache-Control "public, no-transform";
-            }
-    
-            # Additional security headers
-            add_header X-Frame-Options SAMEORIGIN;
-            add_header X-Content-Type-Options nosniff;
-            add_header X-XSS-Protection "1; mode=block";
-            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    
-            # Error pages
-            error_page 500 502 503 504 /50x.html;
-            location = /50x.html {
-                root /usr/share/nginx/html;
-            }
+    server {
+        listen 80;
+        server_name $DOMAIN_NAME;
+
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer-when-downgrade" always;
+        add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+
+        # . files
+        location ~ /\.(?!well-known) {
+            deny all;
+        }
+
+        location / {
+            proxy_pass http://127.0.0.1:$APP_PORT;
+            proxy_set_header Host \$host;
+            proxy_cache_bypass \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_set_header X-Forwarded-Port \$server_port;
+
+            # Enable keepalive connections
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+
+            # Increase timeouts if needed
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+
+            # Gzip compression
+            gzip on;
+            gzip_vary on;
+            gzip_proxied any;
+            gzip_comp_level $NGINX_GZIP_COMP_LEVEL;
+            gzip_types text/plain text/css text/xml application/json application/javascript application/rss+xml application/atom+xml image/svg+xml;
+        }
+
+        # Optimize client-side caching
+        location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+            expires 30d;
+            add_header Cache-Control "public, no-transform";
         }
     }
 EOL
     then
         echo -e "${RED}Failed to create Nginx configuration${NC}"
+        cleanup
         exit 1
     fi
     color_echo "Nginx configuration created"
@@ -392,6 +396,7 @@ EOL
     color_echo "Testing Nginx configuration..."
     if ! sudo nginx -t; then
         echo -e "${RED}Nginx configuration test failed${NC}"
+        cleanup
         exit 1
     fi
     color_echo "Restarting Nginx..."
