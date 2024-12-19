@@ -15,17 +15,65 @@ color_echo() {
 
 # Cleanup function
 cleanup() {
-    echo -e "${RED}Cleaning up...${NC}"
-    # Add commands to undo changes here, for example:
-    sudo systemctl stop $APP_CODE_NAME.service 2>/dev/null || true
-    sudo systemctl disable $APP_CODE_NAME.service 2>/dev/null || true
-    sudo rm -f /etc/systemd/system/$APP_CODE_NAME.service
-    sudo rm -f /etc/nginx/sites-available/$APP_CODE_NAME
-    sudo rm -f /etc/nginx/sites-enabled/$APP_CODE_NAME
-    sudo systemctl reload nginx
-    sudo userdel -r $APP_CODE_NAME 2>/dev/null || true
-    sudo rm -rf /var/www/$APP_CODE_NAME
-    echo -e "${RED}Cleanup completed.${NC}"
+    local APP_CODE_NAME="$1"
+    
+    echo -e "${RED}Starting cleanup for $APP_CODE_NAME...${NC}"
+    
+    # Stop and disable systemd service
+    if [ -f "/etc/systemd/system/$APP_CODE_NAME.service" ]; then
+        echo "Stopping and disabling systemd service..."
+        sudo systemctl stop $APP_CODE_NAME.service 2>/dev/null || true
+        sudo systemctl disable $APP_CODE_NAME.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/$APP_CODE_NAME.service
+        sudo systemctl daemon-reload
+    fi
+
+    # Remove nginx configurations
+    if [ -f "/etc/nginx/sites-available/$APP_CODE_NAME" ]; then
+        echo "Removing nginx configurations..."
+        sudo rm -f /etc/nginx/sites-available/$APP_CODE_NAME
+        sudo rm -f /etc/nginx/sites-enabled/$APP_CODE_NAME
+        sudo systemctl reload nginx
+    fi
+
+    # Remove process management files (pm2 if used)
+    if command -v pm2 &> /dev/null; then
+        echo "Removing PM2 processes if any..."
+        sudo -u $APP_CODE_NAME bash -c '
+            export NVM_DIR="/usr/local/nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            pm2 delete '$APP_CODE_NAME' 2>/dev/null || true
+            pm2 save 2>/dev/null || true
+        ' || true
+    fi
+
+    # Remove application user and directory
+    echo "Removing application user and directory..."
+    if id "$APP_CODE_NAME" &>/dev/null; then
+        sudo userdel -r $APP_CODE_NAME 2>/dev/null || true
+    fi
+    
+    if [ -d "/var/www/$APP_CODE_NAME" ]; then
+        sudo rm -rf /var/www/$APP_CODE_NAME
+    fi
+
+    # Clean up node_modules and npm cache if necessary
+    echo "Cleaning npm cache..."
+    sudo -u $APP_CODE_NAME bash -c '
+        export NVM_DIR="/usr/local/nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        npm cache clean --force 2>/dev/null || true
+    ' || true
+
+    # Remove any environment files
+    if [ -f "/etc/environment.d/$APP_CODE_NAME.conf" ]; then
+        sudo rm -f /etc/environment.d/$APP_CODE_NAME.conf
+    fi
+
+    # Remove any logs
+    sudo rm -f /var/log/$APP_CODE_NAME*.log 2>/dev/null || true
+
+    echo -e "${GREEN}Cleanup completed for $APP_CODE_NAME.${NC}"
 }
 
 # Set trap to call cleanup function on error
@@ -44,33 +92,112 @@ check_update_system() {
         color_echo "No updates available. System is up to date."
     fi
 }
-# Function to check and install Node.js
-check_install_nodejs() {
-    if ! command -v node &> /dev/null; then
-        color_echo "Node.js not found. Installing Node.js LTS..."
-        curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-        sudo apt-get install -y nodejs
+# Function to check and install system-wide nvm
+check_install_nvm() {
+    if [ ! -d "/usr/local/nvm" ]; then
+        color_echo "NVM not found. Installing nvm system-wide..."
         
-        # Verify installation
-        node_version=$(node --version)
-        npm_version=$(npm --version)
-        color_echo "Node.js ${node_version} and npm ${npm_version} have been installed."
+        # Create NVM directory
+        sudo mkdir -p /usr/local/nvm || {
+            echo "Failed to create NVM directory"
+            return 1
+        }
+        
+        sudo chmod 777 /usr/local/nvm
+        
+        # Download and install NVM
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | NVM_DIR=/usr/local/nvm bash || {
+            echo "Failed to install NVM"
+            return 1
+        }
+        
+        # Verify NVM installation
+        export NVM_DIR="/usr/local/nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        
+        if ! command -v nvm &> /dev/null; then
+            echo "NVM installation failed"
+            return 1
+        fi
+
     else
-        node_version=$(node --version)
-        npm_version=$(npm --version)
-        color_echo "Node.js ${node_version} and npm ${npm_version} are already installed."
+        color_echo "NVM is already installed system-wide."
     fi
 }
-# Function to check and install nvm
-check_install_nvm() {
-    if [ ! -d "$HOME/.nvm" ]; then
-        color_echo "NVM not found. Installing nvm..."
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-        # Load nvm immediately after installation
-        export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
+# Function to setup Node.js project environment
+setup_nodejs_project() {
+    local APP_CODE_NAME="$1"
+    local PROJECT_DIR="/var/www/$APP_CODE_NAME"
+    
+    # Switch to the project directory
+    cd "$PROJECT_DIR"
+    
+    color_echo "Setting up Node.js environment..."
+    
+    # Create .nvmrc file with LTS version
+    echo "lts/*" > .nvmrc
+    sudo chown $APP_CODE_NAME:$APP_CODE_NAME .nvmrc
+    
+    # Install and use the LTS version of Node.js for this project
+    sudo -u "$APP_CODE_NAME" bash -c '
+        export NVM_DIR="/usr/local/nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        
+        # Install LTS version
+        nvm install --lts
+        nvm use --lts
+        
+        # Verify npm installation
+        if ! command -v npm &> /dev/null; then
+            echo "npm not found. Installing npm..."
+            # Install latest npm version
+            nvm install-latest-npm
+        fi
+        
+        # Update npm to latest version
+        npm install -g npm@latest
+        
+        # Install project dependencies
+        if [ -f "package.json" ]; then
+            npm install
+            
+            # Run npm audit fix
+            npm audit fix || true  # Continue even if audit fix fails
+            
+            # Run npm audit fix --force if regular fix did not resolve all issues
+            if [ "$(npm audit --json | jq -r ".metadata.vulnerabilities.total")" -gt 0 ]; then
+                echo "Running forceful security fixes..."
+                npm audit fix --force || true
+            fi
+        else
+            npm init -y
+        fi
+        
+        # Save the Node.js version in package.json
+        node_version=$(node -v)
+        npm pkg set engines.node="$node_version"
+    '
+    
+    # Set proper permissions for the project directory
+    sudo chown -R $APP_CODE_NAME:$APP_CODE_NAME $PROJECT_DIR
+    
+    # Verify installation
+    if sudo -u "$APP_CODE_NAME" bash -c '
+        export NVM_DIR="/usr/local/nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        echo "Node.js version: $(node --version)"
+        echo "npm version: $(npm --version)"
+        
+        # Verify both Node.js and npm are working
+        if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+            echo "Error: Node.js or npm installation verification failed"
+            exit 1
+        fi
+    '; then
+        color_echo "Node.js environment setup completed successfully"
     else
-        color_echo "NVM is already installed."
+        color_echo "Failed to setup Node.js environment"
+        return 1
     fi
 }
 # Function to check and install nginx
@@ -177,8 +304,13 @@ main() {
 
     if [ "$MODE" = "Uninstall" ]; then
         read -p "Enter the app code name to uninstall: " APP_CODE_NAME
-        cleanup
-        echo -e "${GREEN}Uninstallation complete for '$APP_CODE_NAME'${NC}"
+        read -p "Are you sure you want to uninstall $APP_CODE_NAME? [y/N]: " confirm
+        if [[ $confirm =~ ^[Yy]$ ]]; then
+            cleanup "$APP_CODE_NAME"
+            echo -e "${GREEN}Uninstallation complete for '$APP_CODE_NAME'${NC}"
+        else
+            echo "Uninstallation cancelled."
+        fi
         exit 0
     fi
 
@@ -227,7 +359,7 @@ main() {
     # Check and install nginx
     check_install_nginx
 
-    # Check and install nvm
+    # Install nvm
     check_install_nvm
     
     # Check if the port is in use
@@ -254,24 +386,8 @@ main() {
     cd /var/www/$APP_CODE_NAME
     color_echo "Changed to app directory"
 
-    # Create the virtual environment
-    color_echo "Creating virtual environment..."
-    sudo -u $APP_CODE_NAME python3 -m venv venv
-    color_echo "Virtual environment created"
-
-    # Install dependencies
-    color_echo "Installing dependencies..."
-    if ! sudo -u $APP_CODE_NAME bash -c "source venv/bin/activate && pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir uvloop httptools"; then
-        echo -e "${RED}Failed to install dependencies${NC}"
-        cleanup
-        exit 1
-    fi
-    color_echo "Dependencies installed successfully"
-
-    # Set correct permissions for the virtual environment
-    color_echo "Setting permissions for virtual environment..."
-    sudo chown -R $APP_CODE_NAME:$APP_CODE_NAME venv
-    color_echo "Permissions set"
+    # Setup Node.js project environment
+    setup_nodejs_project "$APP_CODE_NAME"
     
     # Create the systemd service file
     color_echo "Creating systemd service file..."
@@ -291,6 +407,7 @@ main() {
 
     # Environment variables
     Environment="NODE_ENV=production"
+    Environment="HOST=127.0.0.1"
     Environment="PORT=$APP_PORT"
 
     WorkingDirectory=/var/www/$APP_CODE_NAME
