@@ -1,22 +1,50 @@
-# Lazy Deployement
+# 🚀 Lazy Deployment
 
-## Here's how you can run the script in Ubuntu
-### FastAPI
-Download the script:
-`curl -sSL https://raw.githubusercontent.com/heyWolfy/lazy-deployment/main/fast_api.sh -o fast_api.sh`
+Instantly configure FastAPI or Node.js apps with Nginx reverse proxy - answer a few questions, and you're ready to go!
 
-Make the script executable:
-`chmod +x fast_api.sh`
+## ✨ Why Use Lazy Deployment?
+- 🎯 Quick setup - deploy in minutes
+- 🔄 Automatic service configuration
+- 🛡️ Built-in Nginx reverse proxy setup
+- 🧹 Easy uninstallation option
+- 💻 Perfect for development and production
+- 🔧 Minimal manual configuration needed
 
-Run the script:
-`sudo ./fast_api.sh`
+## 🏃‍♂️ Quick Start
 
-### NodeJs App
-Download the script:
-`curl -sSL https://raw.githubusercontent.com/heyWolfy/lazy-deployment/main/node.sh -o Node_App_Installer.sh`
+### FastAPI Setup
+```bash
+# Download
+curl -sSL https://raw.githubusercontent.com/heyWolfy/lazy-deployment/main/fast_api.sh -o fast_api.sh && chmod +x fast_api.sh
+```
+```bash
+# Run
+sudo ./fast_api.sh
+```
 
-Make the script executable:
-`chmod +x Node_App_Installer.sh`
+### Node.js Setup
+```bash
+# Download and run
+curl -sSL https://raw.githubusercontent.com/heyWolfy/lazy-deployment/main/node.sh -o Node_App_Installer.sh && chmod +x Node_App_Installer.sh
+```
+```bash
+# Run
+sudo ./Node_App_Installer.sh
+```
 
-Run the script:
-`sudo ./Node_App_Installer.sh`
+## 🔍 Requirements
+- Ubuntu/Debian-based system
+- Sudo privileges
+- Internet connection
+
+## 📝 Note
+The script will guide you through the configuration process with simple questions about your deployment preferences.
+
+## 🛠️ Features
+- Automatic service file creation
+- Nginx configuration setup
+- Domain configuration
+- SSL setup (optional)
+- Easy uninstallation process
+
+Feel free to contribute! 🌟
