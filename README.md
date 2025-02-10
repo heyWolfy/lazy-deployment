@@ -14,21 +14,17 @@ Instantly configure FastAPI or Node.js apps with Nginx reverse proxy - answer a 
 
 ### FastAPI Setup
 ```bash
-# Download
 curl -sSL https://raw.githubusercontent.com/heyWolfy/lazy-deployment/main/fast_api.sh -o fast_api.sh && chmod +x fast_api.sh
 ```
 ```bash
-# Run
 sudo ./fast_api.sh
 ```
 
 ### Node.js Setup
 ```bash
-# Download and run
 curl -sSL https://raw.githubusercontent.com/heyWolfy/lazy-deployment/main/node.sh -o Node_App_Installer.sh && chmod +x Node_App_Installer.sh
 ```
 ```bash
-# Run
 sudo ./Node_App_Installer.sh
 ```
 
